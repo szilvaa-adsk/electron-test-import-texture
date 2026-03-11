@@ -36,21 +36,21 @@ Fallback path:
 
 ```mermaid
 flowchart LR
-	A[Offscreen BrowserWindow<br/>offscreen.useSharedTexture=true] -->|paint event| B[event.texture]
-	B --> C[sharedTexture.importSharedTexture()<br/>src/main.ts]
-	C --> D[sharedTexture.sendSharedTexture()<br/>to visible frame]
-	D --> E[preload: setSharedTextureReceiver()]
-	E --> F[window.textures.onSharedTexture()]
+	A["Offscreen BrowserWindow<br/>offscreen.useSharedTexture=true"] -->|paint event| B["event.texture"]
+	B --> C["sharedTexture.importSharedTexture()<br/>src/main.ts"]
+	C --> D["sharedTexture.sendSharedTexture()<br/>to visible frame"]
+	D --> E["preload: setSharedTextureReceiver()"]
+	E --> F["window.textures.onSharedTexture()"]
 
-	F --> G[WebGPU path<br/>renderer-webgpu.ts]
-	G --> H[imported.getVideoFrame()]
-	H --> I[device.importExternalTexture()]
-	I --> J[renderPass.draw() grid]
+	F --> G["WebGPU path<br/>renderer-webgpu.ts"]
+	G --> H["imported.getVideoFrame()"]
+	H --> I["device.importExternalTexture()"]
+	I --> J["renderPass.draw() grid"]
 
-	F --> K[WebGL fallback<br/>renderer-webgl.ts]
-	K --> L[imported.getVideoFrame()]
-	L --> M[gl.texImage2D()]
-	M --> N[gl.drawArrays() grid]
+	F --> K["WebGL fallback<br/>renderer-webgl.ts"]
+	K --> L["imported.getVideoFrame()"]
+	L --> M["gl.texImage2D()"]
+	M --> N["gl.drawArrays() grid"]
 ```
 
 ## Diagram: Single Frame Lifecycle
