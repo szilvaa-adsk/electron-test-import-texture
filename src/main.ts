@@ -40,6 +40,7 @@ const createWindow = (): void => {
 
     win.webContents.on("did-finish-load", () => {
         console.log(`win pid: ${win.webContents.getOSProcessId()}`);
+        win.webContents.openDevTools({ mode: "detach" });
     });
 
     // Create offscreen windows for texture sources
@@ -67,10 +68,14 @@ const createWindow = (): void => {
             paintCount++;
             const texture = event.texture!;
 
+            if (paintCount <= 3 || paintCount % 120 === 0) {
+                logWithTime(`osr[${i}] paint`, `count=${paintCount}`);
+            }
+
             const start = process.hrtime.bigint();
             const imported = sharedTexture.importSharedTexture({
                 textureInfo: texture.textureInfo,
-                allReferenceReleased() {
+                allReferencesReleased() {
                     texture.release()
                     releaseCount++;
                 }
@@ -81,10 +86,16 @@ const createWindow = (): void => {
             logWithTime("importSharedTexture took", importMs.toFixed(3), "ms", paintCount, releaseCount);
 
             try {
-                await sharedTexture.sendToRenderer(win.webContents, imported, i)
+                if (paintCount <= 3 || paintCount % 120 === 0) {
+                    logWithTime(`sendSharedTexture -> renderer`, `osrIndex=${i}`);
+                }
+                await sharedTexture.sendSharedTexture({
+                    frame: win.webContents.mainFrame,
+                    importedSharedTexture: imported,
+                }, i)
                 imported.release();
             } catch (e) {
-                console.log('timeout')
+                console.log('sendSharedTexture timeout/error', e)
             }
         });
 

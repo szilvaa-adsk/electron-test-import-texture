@@ -39,6 +39,7 @@ let format: GPUTextureFormat;
 let context: GPUCanvasContext;
 let offscreenTexture: GPUTexture | null = null;
 let offscreenTextureView: GPUTextureView | null = null;
+let sharedTextureRegistered = false;
 
 // Full-screen quad shader (offscreenTexture -> canvas)
 const getFullScreenShaderCode = () => `
@@ -74,17 +75,23 @@ const getFullScreenShaderCode = () => `
 
 // Initialize WebGPU
 const initWebGpu = async (): Promise<void> => {
+    if (!navigator.gpu) {
+        throw new Error("navigator.gpu is unavailable in this renderer");
+    }
+
     const adapter = await navigator.gpu.requestAdapter();
-    device = await adapter!.requestDevice();
-    format = "rgba16float";
+    if (!adapter) {
+        throw new Error("navigator.gpu.requestAdapter() returned null");
+    }
+
+    device = await adapter.requestDevice();
+    format = navigator.gpu.getPreferredCanvasFormat();
 
     context = canvas.getContext("webgpu") as GPUCanvasContext;
     context.configure({
         device,
         format,
-        //@ts-ignore
-        colorSpace: 'srgb-linear',
-        toneMapping: { mode: "extended" }
+        colorSpace: "srgb"
     });
 
     // 创建离屏渲染纹理
@@ -284,6 +291,54 @@ const createRenderPipeline = async (): Promise<GPURenderPipeline> => {
 // Store textures in renderer
 const storedTextures: { id: string, idx: number, frame: VideoFrame, texture: GPUExternalTexture }[] = [];
 
+const registerSharedTextureReceiver = () => {
+    if (sharedTextureRegistered) {
+        return;
+    }
+
+    sharedTextureRegistered = true;
+    (window as any).textures.onSharedTexture(async (id: string, idx: number, imported: Electron.SharedTextureImported) => {
+        console.log("[renderer-webgpu] onSharedTexture", { idx, textureId: imported.textureId });
+        const frame = imported.getVideoFrame() as VideoFrame;
+
+        try {
+            const texture = device.importExternalTexture({
+                source: frame,
+                colorSpace: "srgb",
+            }) as GPUExternalTexture;
+
+            storedTextures.push({ id, idx, frame, texture });
+            if (storedTextures.length <= 3) {
+                console.log("[renderer-webgpu] stored texture", { idx, storedTextures: storedTextures.length });
+            }
+        } catch (error) {
+            frame.close();
+            console.error("[renderer-webgpu] failed to import external texture", error);
+        } finally {
+            imported.release();
+        }
+    });
+};
+
+const loadWebGlFallback = () => {
+    const existing = document.querySelector('script[data-renderer-fallback="webgl"]');
+    if (existing) {
+        return;
+    }
+
+    const fallbackScript = document.createElement("script");
+    fallbackScript.src = "dist/renderer-webgl.js";
+    fallbackScript.defer = true;
+    fallbackScript.dataset.rendererFallback = "webgl";
+    fallbackScript.onload = () => {
+        console.warn("[renderer-webgpu] WebGL fallback loaded");
+    };
+    fallbackScript.onerror = () => {
+        console.error("[renderer-webgpu] Failed to load WebGL fallback script");
+    };
+    document.head.appendChild(fallbackScript);
+};
+
 // Render the grid with current textures
 const renderGrid = async () => {
     if (!device || !context || !pipeline || !sampler || !offscreenTextureView) {
@@ -295,27 +350,24 @@ const renderGrid = async () => {
         return; // Nothing to render
     }
 
-    try {
-        // Use a map for faster lookups
-        const textureMap = new Map<number, { texture: GPUExternalTexture, id: string, frame: VideoFrame }>();
-        const releases = []
+    if (storedTextures.length <= 3 || storedTextures.length % 16 === 0) {
+        console.log("[renderer-webgpu] renderGrid", { bufferedTextures: storedTextures.length });
+    }
 
-        // Process textures
-        const keep = []
-        for (const { id, idx, frame, texture } of storedTextures) {
-            if (textureMap.has(idx)) {
-                keep.push({ id, idx, frame, texture })
-            } else {
-                textureMap.set(idx, { texture, id, frame });
-                releases.push(async () => {
-                    frame.close();
-                });
+    try {
+        const textureMap = new Map<number, { texture: GPUExternalTexture, id: string, frame: VideoFrame }>();
+        const framesToClose: VideoFrame[] = [];
+
+        for (const item of storedTextures) {
+            const existing = textureMap.get(item.idx);
+            if (existing) {
+                framesToClose.push(existing.frame);
             }
+            textureMap.set(item.idx, item);
         }
 
-        // Clear the array but keep its capacity
+        // All queued frames are either used this frame or superseded by newer frames.
         storedTextures.length = 0;
-        storedTextures.push(...keep)
 
         if (textureMap.size === 0) {
             return; // No valid textures to render
@@ -389,8 +441,11 @@ const renderGrid = async () => {
         device.queue.submit([commandEncoder.finish()]);
 
         // Release frames efficiently after rendering is complete
-        for (const release of releases) {
-            await release();
+        for (const frame of framesToClose) {
+            frame.close();
+        }
+        for (const textureData of textureMap.values()) {
+            textureData.frame.close();
         }
     } catch (error) {
         console.error("Error in renderGrid:", error);
@@ -400,6 +455,7 @@ const renderGrid = async () => {
 // Initialize WebGPU
 initWebGpu().then(() => {
     console.log("WebGPU initialized, starting render loop");
+    registerSharedTextureReceiver();
 
     const renderLoop = () => {
         renderGrid();
@@ -410,25 +466,6 @@ initWebGpu().then(() => {
     renderLoop();
 }).catch(err => {
     console.error('Failed to initialize WebGPU:', err);
-});
-
-// Handle shared texture events
-(window as any).textures.onSharedTexture(async (id: string, idx: number, imported: Electron.SharedTextureImported) => {
-    const frame = imported.getVideoFrame() as VideoFrame;
-
-    if (device) {
-        const texture = device.importExternalTexture({
-            source: frame,
-            //@ts-ignore
-            colorSpace: 'srgb-linear',
-        }) as GPUExternalTexture;
-
-        // Only store what we need for rendering
-        storedTextures.push({ id, idx, frame, texture });
-    } else {
-        frame.close()
-    }
-
-    imported.release();
+    loadWebGlFallback();
 });
 
